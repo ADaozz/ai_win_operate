@@ -1,0 +1,26 @@
+app_name: Windows GUI 智能助手
+log_level: INFO
+log_dir: logs
+llm_model: qwen3.7-plus
+llm_base_url: https://ws-se0hlnu75b2d90hn.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+llm_timeout: 60
+llm_response_format: json_object
+agent_max_steps: 30
+agent_action_delay_ms: 500
+agent_max_repeated_actions: 3
+agent_max_repeated_clicks: 5
+agent_repeat_recovery_attempts: 3
+agent_click_repeat_recovery_attempts: 8
+agent_frame_diff_threshold: 0.005
+agent_max_plan_actions: 5
+emergency_stop_key: F8
+llm_provider: openai_compatible
+llm_auth_mode: bearer
+llm_max_image_width: 1600
+llm_jpeg_quality: 85
+allowed_hotkeys:
+  - CTRL+A
+  - CTRL+C
+  - CTRL+V
+  - CTRL+F
+  - ENTER
