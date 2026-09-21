@@ -8,6 +8,7 @@ import time
 from io import BytesIO
 from types import TracebackType
 from typing import Any, Literal, Self
+from urllib.parse import urlparse
 
 import httpx
 from PIL import Image
@@ -30,6 +31,27 @@ from app.config.settings import Settings
 from app.llm.prompts import SYSTEM_PROMPT, build_user_prompt
 
 logger = get_logger(__name__)
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def is_loopback_base_url(base_url: str) -> bool:
+    """Return True when the LLM gateway host is a local loopback address."""
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    return host in _LOOPBACK_HOSTS
+
+
+def build_httpx_client(*, base_url: str, timeout: float) -> httpx.AsyncClient:
+    """Build an HTTP client that bypasses OS/env proxies for local gateways.
+
+    Windows system proxy settings are otherwise applied by httpx (trust_env=True)
+    and often break ``http://localhost`` / ``127.0.0.1`` LLM gateways with
+    ``ReadError`` / ``ConnectError`` before any HTTP status is returned.
+    """
+    return httpx.AsyncClient(
+        timeout=timeout,
+        trust_env=not is_loopback_base_url(base_url),
+    )
 
 
 class OpenAICompatibleVisionClient:
@@ -60,7 +82,10 @@ class OpenAICompatibleVisionClient:
         self._api_key = api_key
         self._max_image_width = max_image_width
         self._jpeg_quality = jpeg_quality
-        self._client = client or httpx.AsyncClient(timeout=self._timeout)
+        self._client = client or build_httpx_client(
+            base_url=base_url,
+            timeout=self._timeout,
+        )
         self._owns_client = client is None
 
     @classmethod
@@ -121,13 +146,16 @@ class OpenAICompatibleVisionClient:
             )
             raise LLMTimeoutError("LLM request timed out") from exc
         except httpx.RequestError as exc:
+            cause = str(exc).strip() or type(exc).__name__
             logger.error(
                 "llm_transport_error",
                 model=self._model,
                 duration_ms=self._duration_ms(started),
+                error_type=type(exc).__name__,
+                error=cause[:300],
             )
             raise LLMTransportError(
-                "LLM request failed before receiving a response"
+                f"LLM request failed before receiving a response: {cause[:200]}"
             ) from exc
 
         request_id = self._request_id(response)
@@ -230,7 +258,11 @@ class OpenAICompatibleVisionClient:
             ],
             "response_format": response_format,
         }
-        if self._response_format == "json_object":
+        # DashScope accepts this Qwen-specific flag; strict OpenAI-compatible
+        # local gateways reject unknown top-level parameters.
+        if self._response_format == "json_object" and not is_loopback_base_url(
+            self._endpoint
+        ):
             payload["enable_thinking"] = False
         return payload
 

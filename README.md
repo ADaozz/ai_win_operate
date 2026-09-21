@@ -28,7 +28,7 @@
 ### 1. 创建虚拟环境并安装
 
 ```powershell
-cd D:\pycode\ai_operate
+cd D:\pythoncode\ai_win_operate
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
@@ -45,10 +45,12 @@ copy .env.example .env
 | 变量 | 说明 |
 |------|------|
 | `WGA_LLM_PROVIDER` | 固定为 `openai_compatible` |
-| `WGA_LLM_MODEL` | 模型名，如 `qwen3.7-plus` |
-| `WGA_LLM_BASE_URL` | 接口地址，如 `http://127.0.0.1:8000/v1` |
+| `WGA_LLM_MODEL` | 模型名，如 `qwen3.7-plus` / `qwen3.6-flash` |
+| `WGA_LLM_BASE_URL` | 接口地址，如本地 `http://127.0.0.1:8000/v1` 或云端兼容地址 |
 | `WGA_LLM_AUTH_MODE` | `none` 或 `bearer` |
 | `WGA_LLM_API_KEY` | API Key（`bearer` 时需要；兼容 `DASHSCOPE_API_KEY`） |
+
+使用本地网关（`localhost` / `127.0.0.1` / `::1`）时，客户端会自动绕过 Windows 系统代理，并省略仅 DashScope 识别的 `enable_thinking` 字段，避免出现 `LLMTransportError` 或 `400 Unknown parameter`。
 
 ### 3. 启动
 
@@ -63,6 +65,8 @@ windows-gui-agent
 1. 在窗口列表中选择目标 **HWND**
 2. 输入自然语言任务（例如：「打开记事本并输入 hello」）
 3. 点击 **开始**
+
+右上角的 **设置** 按钮可直接配置 Model Name、Base URL 和 API Key；保存后从下一次 AI 任务开始生效，并同步写入本地 `.env`。
 
 运行时循环：
 
@@ -120,6 +124,8 @@ pytest tests/ -q --ignore=tests/test_input_executor.py
 - 目标窗口最小化时暂停周期截图，恢复后可立即截图继续
 - `TextInputHost.exe` 不会出现在候选窗口列表；全黑帧在调用模型前会被拒绝
 - Frame Diff 已接入 Runtime 的 VERIFY 阶段
+- 本地 LLM Base URL 不走系统代理；远程地址仍尊重 `HTTP(S)_PROXY` / Windows 代理设置
+- GUI「设置」保存的模型配置写入 `.env`，对**下一次** Agent 任务生效
 
 ## 当前限制
 

@@ -60,6 +60,7 @@ def create_application(
         window_capture=capture,
         input_executor=manual_input,
         runtime_factory=runtime_factory,
+        settings=current_settings,
     )
     if runtime_factory is not None:
         window.install_emergency_stop(app, current_settings.emergency_stop_key)

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PIL import Image
 from PySide6.QtCore import QCoreApplication, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
+    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -20,12 +25,14 @@ from app.agent.runtime import AgentRuntime, RuntimeEvent
 from app.agent.state import AgentState, AgentStatus
 from app.common.exceptions import WindowsGuiAgentError
 from app.common.logging import get_logger
+from app.config.settings import DEFAULT_ENV_PATH, Settings, save_llm_settings
 from app.ui.agent_control_panel import AgentControlPanel
 from app.ui.agent_worker import AgentWorker
 from app.ui.debug_panel import ActionDebugPanel, InputService
 from app.ui.log_panel import AgentLogPanel
 from app.ui.runtime_monitor import RuntimeMonitor
 from app.ui.screenshot_panel import CaptureService, ScreenshotPanel
+from app.ui.settings_dialog import LLMSettingsDialog
 from app.ui.window_picker import WindowPicker, WindowProvider
 from app.windows.capture import WindowCapture
 from app.windows.emergency_stop import EmergencyStopHotkey
@@ -57,9 +64,13 @@ class MainWindow(QMainWindow):
         window_capture: CaptureService | None = None,
         input_executor: InputService | None = None,
         runtime_factory: RuntimeFactory | None = None,
+        settings: Settings | None = None,
+        settings_path: Path = DEFAULT_ENV_PATH,
     ) -> None:
         super().__init__()
         self._runtime_factory = runtime_factory
+        self._settings = settings or Settings()
+        self._settings_path = settings_path
         self._runtime: AgentRuntime | None = None
         self._agent_thread: QThread | None = None
         self._agent_worker: AgentWorker | None = None
@@ -71,6 +82,12 @@ class MainWindow(QMainWindow):
 
         central_widget = QWidget(self)
         central_layout = QVBoxLayout(central_widget)
+
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.addStretch(1)
+        self.settings_button = QPushButton("设置", central_widget)
+        self.settings_button.setToolTip("配置 Model Name、Base URL 和 API Key")
+        toolbar_layout.addWidget(self.settings_button)
 
         target_group = QGroupBox("目标窗口", central_widget)
         target_layout = QVBoxLayout(target_group)
@@ -120,6 +137,7 @@ class MainWindow(QMainWindow):
         debug_layout.addWidget(self.debug_panel)
         self.debug_panel.status_changed.connect(self.statusBar().showMessage)
 
+        central_layout.addLayout(toolbar_layout)
         central_layout.addWidget(target_group)
         central_layout.addWidget(task_group)
         central_layout.addWidget(splitter, stretch=1)
@@ -129,6 +147,7 @@ class MainWindow(QMainWindow):
 
         self.window_picker.window_selected.connect(self._on_target_selected)
         self.window_picker.selection_cleared.connect(self._on_target_cleared)
+        self.settings_button.clicked.connect(self._open_settings)
         self.agent_control.start_requested.connect(self._start_agent)
         self.agent_control.pause_requested.connect(self._pause_agent)
         self.agent_control.resume_requested.connect(self._resume_agent)
@@ -141,6 +160,36 @@ class MainWindow(QMainWindow):
             self._on_target_selected(selected.hwnd)
         else:
             self.agent_control.set_target_available(False)
+
+    @Slot()
+    def _open_settings(self) -> None:
+        dialog = LLMSettingsDialog(self._settings, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        old_model = self._settings.llm_model
+        old_base_url = self._settings.llm_base_url
+        old_auth_mode = self._settings.llm_auth_mode
+        old_api_key = self._settings.llm_api_key
+        self._settings.llm_model = dialog.model_name
+        self._settings.llm_base_url = dialog.base_url
+        self._settings.llm_api_key = dialog.api_key
+        self._settings.llm_auth_mode = (
+            "bearer" if dialog.api_key.get_secret_value() else "none"
+        )
+        try:
+            save_llm_settings(self._settings, self._settings_path)
+        except (OSError, ValueError) as exc:
+            self._settings.llm_model = old_model
+            self._settings.llm_base_url = old_base_url
+            self._settings.llm_auth_mode = old_auth_mode
+            self._settings.llm_api_key = old_api_key
+            logger.exception("llm_settings_save_failed", error_type=type(exc).__name__)
+            QMessageBox.critical(self, "保存失败", f"无法保存模型配置：{exc}")
+            return
+        self.statusBar().showMessage(
+            f"模型配置已保存：{self._settings.llm_model}（下次任务生效）"
+        )
 
     def install_emergency_stop(
         self,

@@ -4,15 +4,18 @@ from collections.abc import Callable
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 from PIL import Image
+from pydantic import HttpUrl, SecretStr
 
 from app.actions.executor import ActionExecutor
 from app.actions.schema import parse_decision
 from app.actions.validator import ActionValidator
 from app.agent.runtime import AgentRuntime, RuntimeEvent
 from app.agent.state import AgentState, AgentStatus
+from app.config.settings import Settings
 from app.ui.main_window import MainWindow
+from app.ui.settings_dialog import LLMSettingsDialog
 from app.windows.models import WindowInfo
 
 
@@ -104,11 +107,84 @@ def test_main_window_has_expected_shell() -> None:
     assert window.debug_group.isCheckable()
     assert not window.debug_group.isChecked()
     assert window.debug_panel.isHidden()
+    assert window.settings_button.text() == "设置"
 
     window.debug_group.setChecked(True)
     assert not window.debug_panel.isHidden()
 
     window.screenshot_panel.clear_target_window()
+    window.close()
+    app.processEvents()
+
+
+def test_settings_dialog_edits_model_connection() -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = Settings.model_construct(
+        llm_model="old-model",
+        llm_base_url=HttpUrl("https://old.example.test/v1"),
+        llm_auth_mode="bearer",
+        llm_api_key=SecretStr("old-key"),
+        dashscope_api_key=None,
+    )
+    dialog = LLMSettingsDialog(settings)
+
+    assert dialog.api_key_input.echoMode() == dialog.api_key_input.EchoMode.Password
+    dialog.model_input.setText("new-model")
+    dialog.base_url_input.setText("http://127.0.0.1:8000/v1")
+    dialog.api_key_input.setText("new-key")
+    dialog._validate_and_accept()
+
+    assert dialog.result() == dialog.DialogCode.Accepted
+    assert dialog.model_name == "new-model"
+    assert str(dialog.base_url) == "http://127.0.0.1:8000/v1"
+    assert dialog.api_key.get_secret_value() == "new-key"
+    dialog.close()
+    app.processEvents()
+
+
+def test_main_window_saves_settings_for_next_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = Settings.model_construct(
+        llm_model="old-model",
+        llm_base_url=HttpUrl("https://old.example.test/v1"),
+        llm_auth_mode="bearer",
+        llm_api_key=SecretStr("old-key"),
+        dashscope_api_key=None,
+    )
+
+    class AcceptedSettingsDialog:
+        model_name = "new-model"
+        base_url = HttpUrl("http://127.0.0.1:8000/v1")
+        api_key = SecretStr("new-key")
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        "app.ui.main_window.LLMSettingsDialog",
+        AcceptedSettingsDialog,
+    )
+    env_file = tmp_path / ".env"
+    window = MainWindow(
+        "Test Agent",
+        SingleWindowProvider(),
+        SingleFrameCapture(),
+        settings=settings,
+        settings_path=env_file,
+    )
+
+    window.settings_button.click()
+
+    assert settings.llm_model == "new-model"
+    assert str(settings.llm_base_url) == "http://127.0.0.1:8000/v1"
+    assert settings.llm_api_key.get_secret_value() == "new-key"
+    assert 'WGA_LLM_MODEL="new-model"' in env_file.read_text(encoding="utf-8")
+    assert "下次任务生效" in window.statusBar().currentMessage()
     window.close()
     app.processEvents()
 

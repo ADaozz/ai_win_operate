@@ -25,12 +25,17 @@ from app.common.exceptions import (
     LLMHTTPError,
     LLMResponseStructureError,
     LLMTimeoutError,
+    LLMTransportError,
     MissingApiKeyError,
     StructuredOutputError,
 )
 from app.common.logging import configure_logging
 from app.config.settings import Settings
-from app.llm.openai_compatible import OpenAICompatibleVisionClient
+from app.llm.openai_compatible import (
+    OpenAICompatibleVisionClient,
+    build_httpx_client,
+    is_loopback_base_url,
+)
 from app.llm.qwen_client import QwenClient
 from app.vision.frame_diff import FrameDiffResult
 from app.windows.models import WindowInfo
@@ -228,6 +233,29 @@ def test_qwen_json_object_compatibility_still_sends_decision_schema() -> None:
     assert schema_text in payload["messages"][0]["content"]
 
 
+def test_local_json_object_omits_enable_thinking() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return model_response({"type": "finish", "result": "done"})
+
+    settings = make_settings(response_format="json_object")
+    settings = settings.model_copy(
+        update={"llm_base_url": HttpUrl("http://localhost:8000/v1")}
+    )
+
+    async def run() -> AgentDecision:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = QwenClient(settings, http_client)
+            return await client.decide(make_observation(), make_screenshot())
+
+    decision = asyncio.run(run())
+    assert isinstance(decision.actions[0], FinishAction)
+    payload = json.loads(requests[0].content)
+    assert "enable_thinking" not in payload
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_type"),
     [
@@ -375,3 +403,50 @@ def test_openai_compatible_bearer_requires_key() -> None:
     )
     with pytest.raises(MissingApiKeyError, match="WGA_LLM_API_KEY"):
         client._request_headers()
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("http://localhost:8000/v1", True),
+        ("http://127.0.0.1:8000/v1", True),
+        ("http://[::1]:8000/v1", True),
+        ("https://llm.example.test/compatible-mode/v1", False),
+    ],
+)
+def test_is_loopback_base_url(base_url: str, expected: bool) -> None:
+    assert is_loopback_base_url(base_url) is expected
+
+
+def test_local_gateway_http_client_disables_env_proxy() -> None:
+    client = build_httpx_client(base_url="http://localhost:8000/v1", timeout=2.5)
+    try:
+        assert client._trust_env is False
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_remote_gateway_http_client_keeps_env_proxy() -> None:
+    client = build_httpx_client(
+        base_url="https://llm.example.test/compatible-mode/v1",
+        timeout=2.5,
+    )
+    try:
+        assert client._trust_env is True
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_transport_error_includes_safe_cause(tmp_path: Path) -> None:
+    configure_logging("INFO", tmp_path)
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("proxy read failed", request=request)
+
+    with pytest.raises(LLMTransportError, match="proxy read failed"):
+        run_decide(httpx.MockTransport(fail))
+
+    logs = (tmp_path / "app.log").read_text(encoding="utf-8")
+    assert '"event": "llm_transport_error"' in logs
+    assert '"error_type": "ReadError"' in logs
+    assert "proxy read failed" in logs

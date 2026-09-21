@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,6 +15,13 @@ from pydantic_settings import (
 )
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("defaults.yaml")
+DEFAULT_ENV_PATH = Path(".env")
+_GUI_LLM_ENV_KEYS = (
+    "WGA_LLM_MODEL",
+    "WGA_LLM_BASE_URL",
+    "WGA_LLM_AUTH_MODE",
+    "WGA_LLM_API_KEY",
+)
 
 
 class Settings(BaseSettings):
@@ -85,3 +93,55 @@ def load_settings(config_path: Path = DEFAULT_CONFIG_PATH) -> Settings:
                 raise ValueError(f"Settings file must contain a mapping: {config_path}")
             values = loaded
     return Settings(**values)
+
+
+def save_llm_settings(
+    settings: Settings,
+    env_path: Path = DEFAULT_ENV_PATH,
+) -> None:
+    """Persist GUI-editable LLM settings without replacing other .env values."""
+    values = {
+        "WGA_LLM_MODEL": settings.llm_model,
+        "WGA_LLM_BASE_URL": str(settings.llm_base_url),
+        "WGA_LLM_AUTH_MODE": settings.llm_auth_mode,
+        "WGA_LLM_API_KEY": (
+            settings.llm_api_key.get_secret_value()
+            if settings.llm_api_key is not None
+            else ""
+        ),
+    }
+    if any("\n" in value or "\r" in value for value in values.values()):
+        raise ValueError("LLM settings cannot contain line breaks")
+
+    existing = (
+        env_path.read_text(encoding="utf-8").splitlines()
+        if env_path.is_file()
+        else []
+    )
+    output: list[str] = []
+    replaced: set[str] = set()
+    for line in existing:
+        candidate = line.lstrip()
+        matched_key = next(
+            (
+                key
+                for key in _GUI_LLM_ENV_KEYS
+                if candidate.startswith(f"{key}=")
+            ),
+            None,
+        )
+        if matched_key is None:
+            output.append(line)
+            continue
+        if matched_key not in replaced:
+            output.append(
+                f"{matched_key}={json.dumps(values[matched_key], ensure_ascii=False)}"
+            )
+            replaced.add(matched_key)
+
+    if output and output[-1] != "":
+        output.append("")
+    for key in _GUI_LLM_ENV_KEYS:
+        if key not in replaced:
+            output.append(f"{key}={json.dumps(values[key], ensure_ascii=False)}")
+    env_path.write_text("\n".join(output) + "\n", encoding="utf-8")

@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from app.config.settings import load_settings
+from pydantic import HttpUrl, SecretStr
+
+from app.config.settings import Settings, load_settings, save_llm_settings
 
 
 def test_load_settings_from_yaml(tmp_path: Path, monkeypatch) -> None:
@@ -97,3 +99,31 @@ def test_agent_runtime_limits_load_from_yaml(tmp_path: Path) -> None:
     assert settings.agent_frame_diff_threshold == 0.05
     assert settings.agent_max_plan_actions == 4
     assert settings.emergency_stop_key == "F9"
+
+
+def test_save_llm_settings_updates_env_without_removing_other_values(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "WGA_LOG_LEVEL=DEBUG\n"
+        "WGA_LLM_MODEL=old-model\n"
+        "WGA_LLM_API_KEY=old-key\n",
+        encoding="utf-8",
+    )
+    settings = Settings.model_construct(
+        llm_model="new model",
+        llm_base_url=HttpUrl("http://127.0.0.1:8000/v1"),
+        llm_auth_mode="bearer",
+        llm_api_key=SecretStr("new-secret"),
+    )
+
+    save_llm_settings(settings, env_file)
+
+    saved = env_file.read_text(encoding="utf-8")
+    assert "WGA_LOG_LEVEL=DEBUG" in saved
+    assert 'WGA_LLM_MODEL="new model"' in saved
+    assert 'WGA_LLM_BASE_URL="http://127.0.0.1:8000/v1"' in saved
+    assert 'WGA_LLM_AUTH_MODE="bearer"' in saved
+    assert 'WGA_LLM_API_KEY="new-secret"' in saved
+    assert "old-key" not in saved
